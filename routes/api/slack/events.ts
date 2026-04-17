@@ -21,7 +21,7 @@ async function handleAppMention(event: SlackEvent["event"]) {
   
   const slackToken = Deno.env.get("SLACK_BOT_TOKEN");
   const operateApiKey = Deno.env.get("OPERATE_API_KEY");
-  const operateBaseUrl = Deno.env.get("OPERATE_BASE_URL") || "https://recharger-spotlight-virus.ngrok-free.dev";
+  const operateBaseUrl = Deno.env.get("OPERATE_BASE_URL") || "https://recharger-spotlight-virus.ngrok-free.dev/api";
   
   console.log("🔧 [handleAppMention] Environment check:", {
     hasSlackToken: !!slackToken,

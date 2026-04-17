@@ -5,7 +5,7 @@ export const handler = define.handlers({
     console.log("🌐 [TestOperate] GET request received");
     
     const operateApiKey = Deno.env.get("OPERATE_API_KEY");
-    const operateBaseUrl = Deno.env.get("OPERATE_BASE_URL") || "https://recharger-spotlight-virus.ngrok-free.dev";
+    const operateBaseUrl = Deno.env.get("OPERATE_BASE_URL") || "https://recharger-spotlight-virus.ngrok-free.dev/api";
     
     console.log("🔧 [TestOperate] Environment check:", {
       hasOperateKey: !!operateApiKey,
