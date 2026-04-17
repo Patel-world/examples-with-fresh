@@ -268,9 +268,18 @@ export const handler = define.handlers({
         });
       }
       
-      // Handle app mention events
-      if (body.type === "event_callback" && body.event?.type === "app_mention") {
-        console.log("💬 [SlackEvents] App mention event detected, processing async...");
+      // Handle app mention events AND message events that mention the bot
+      if (body.type === "event_callback" && 
+          (body.event?.type === "app_mention" || 
+           (body.event?.type === "message" && body.event?.text?.includes("<@")))) {
+        
+        console.log("💬 [SlackEvents] Bot mention detected:", {
+          eventType: body.event.type,
+          isAppMention: body.event.type === "app_mention",
+          isMessageMention: body.event.type === "message" && body.event?.text?.includes("<@"),
+          text: body.event?.text
+        });
+        
         // Process async to avoid Slack timeout
         handleAppMention(body.event).catch((error) => {
           console.error("❌ [SlackEvents] Error in async handleAppMention:", {

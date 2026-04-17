@@ -15,6 +15,7 @@ oauth_config:
     bot:
       - app_mentions:read
       - channels:history
+      - channels:read
       - chat:write
       - users:read
       - users:read.email
@@ -26,7 +27,10 @@ settings:
     request_url: https://examples-with-fresh.pateldp2024.deno.net/api/slack/events
     bot_events:
       - app_mention
+      - message.channels
+      - message.groups
       - message.im
+      - message.mpim
   interactivity:
     is_enabled: true
     request_url: https://examples-with-fresh.pateldp2024.deno.net/api/slack/interactive
