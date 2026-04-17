@@ -78,8 +78,8 @@ async function handleAppMention(event: SlackEvent["event"]) {
       console.log("✅ [handleAppMention] Email found:", email);
       
       console.log("🔍 [handleAppMention] Step 5: Checking if user exists in Operate...");
-      // Step 5: Check if user exists in Operate
-      const getUserUrl = `${operateBaseUrl}/api/users?email=${email}`;
+      // Step 5: Check if user exists in Operate using search endpoint
+      const getUserUrl = `${operateBaseUrl}/api/users/search?email=${email}`;
       console.log("🌐 [handleAppMention] Fetching user from Operate:", getUserUrl);
       
       const getUserResponse = await fetch(getUserUrl, {

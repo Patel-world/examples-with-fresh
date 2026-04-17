@@ -31,8 +31,8 @@ export const handler = define.handlers({
 
     try {
       console.log("🔍 [TestOperate] Testing connection to Operate API...");
-      // Test the connection to Operate API
-      const testUrl = `${operateBaseUrl}/api/users`;
+      // Test the connection to Operate API using search endpoint
+      const testUrl = `${operateBaseUrl}/api/users/search?email=test@example.com`;
       console.log("📤 [TestOperate] Sending request:", {
         url: testUrl,
         headers: {

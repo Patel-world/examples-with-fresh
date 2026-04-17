@@ -15,12 +15,13 @@ export const handler = define.handlers({
     }
 
     const testEndpoints = [
+      `${baseHost}/api/users/search?email=test@example.com`,
       `${baseHost}/api/users`,
-      `${baseHost}/v1/api/users`,
-      `${baseHost}:8080/api/users`,
-      `${baseHost}:3000/api/users`,
-      `${baseHost}/backend/api/users`,
-      `${baseHost}/server/api/users`,
+      `${baseHost}/v1/api/users/search?email=test@example.com`,
+      `${baseHost}:8080/api/users/search?email=test@example.com`,
+      `${baseHost}:3000/api/users/search?email=test@example.com`,
+      `${baseHost}/backend/api/users/search?email=test@example.com`,
+      `${baseHost}/server/api/users/search?email=test@example.com`,
       `${baseHost}/api/health`,
       `${baseHost}/health`,
       `${baseHost}/status`,
