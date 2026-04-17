@@ -94,8 +94,32 @@ async function handleAppMention(event: SlackEvent["event"]) {
         statusText: getUserResponse.statusText
       });
       
-      const userData = await getUserResponse.json();
-      console.log("👤 [handleAppMention] User data received:", userData);
+      // Handle HTML responses gracefully
+      const responseText = await getUserResponse.text();
+      console.log("📄 [handleAppMention] Raw response:", {
+        length: responseText.length,
+        isHTML: responseText.trim().startsWith('<!'),
+        preview: responseText.substring(0, 200) + "..."
+      });
+      
+      let userData;
+      try {
+        userData = JSON.parse(responseText);
+        console.log("👤 [handleAppMention] User data received:", userData);
+      } catch (parseError) {
+        console.error("❌ [handleAppMention] Failed to parse response as JSON:", {
+          error: parseError.message,
+          responsePreview: responseText.substring(0, 300),
+          isHTML: responseText.trim().startsWith('<!')
+        });
+        
+        // If we get HTML, likely an auth/endpoint issue
+        if (responseText.trim().startsWith('<!')) {
+          throw new Error(`Operate API returned HTML instead of JSON. Check API endpoint and authentication. Response: ${responseText.substring(0, 100)}...`);
+        } else {
+          throw new Error(`Invalid JSON response from Operate API: ${parseError.message}`);
+        }
+      }
       
       if (userData.users && userData.users.length > 0) {
         operateUserId = userData.users[0].id;
@@ -323,13 +347,22 @@ export const handler = define.handlers({
       // Handle app mention events AND message events that mention the bot
       if (body.type === "event_callback" && 
           (body.event?.type === "app_mention" || 
-           (body.event?.type === "message" && body.event?.text?.includes("<@")))) {
+           (body.event?.type === "message" && body.event?.text?.includes("<@") && !body.event?.bot_id))) {
+        
+        // Prevent processing our own bot messages or messages in threads we already responded to
+        if (body.event?.bot_id) {
+          console.log("🤖 [SlackEvents] Ignoring bot message");
+          return new Response("OK", { status: 200 });
+        }
         
         console.log("💬 [SlackEvents] Bot mention detected:", {
           eventType: body.event.type,
           isAppMention: body.event.type === "app_mention",
           isMessageMention: body.event.type === "message" && body.event?.text?.includes("<@"),
-          text: body.event?.text
+          text: body.event?.text,
+          user: body.event?.user,
+          channel: body.event?.channel,
+          hasThreadTs: !!body.event?.thread_ts
         });
         
         // Process async to avoid Slack timeout
