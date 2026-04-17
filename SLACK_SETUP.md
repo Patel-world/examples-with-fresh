@@ -9,7 +9,7 @@ Create a `.env` file with the following variables:
 ```bash
 SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 OPERATE_API_KEY=op_live_abc123...
-OPERATE_BASE_URL=https://recharger-spotlight-virus.ngrok-free.dev/api
+OPERATE_BASE_URL=https://recharger-spotlight-virus.ngrok-free.dev/operate/api
 ```
 
 ## Slack App Configuration
@@ -33,7 +33,7 @@ OPERATE_BASE_URL=https://recharger-spotlight-virus.ngrok-free.dev/api
 Set these environment variables in your Deno Deploy dashboard:
 - `SLACK_BOT_TOKEN`: Get from your Slack app's OAuth & Permissions page  
 - `OPERATE_API_KEY`: Your Operate API key (format: `op_live_...`)
-- `OPERATE_BASE_URL`: `https://recharger-spotlight-virus.ngrok-free.dev/api`
+- `OPERATE_BASE_URL`: `https://recharger-spotlight-virus.ngrok-free.dev/operate/api`
 
 ## Flow
 
