@@ -21,7 +21,9 @@
   "imports": {
     "fresh": "jsr:@fresh/core@^2.0.0-alpha.60",
     "preact": "npm:preact@^10.27.1",
-    "@preact/signals": "npm:@preact/signals@^2.3.1"
+    "@preact/signals": "npm:@preact/signals@^2.3.1",
+    "@slack/web-api": "npm:@slack/web-api@^7.0.0",
+    "@slack/types": "npm:@slack/types@^2.0.0"
   },
   "compilerOptions": {
     "lib": [

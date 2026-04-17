@@ -1,0 +1,35 @@
+display_information:
+  name: Operate Bot
+  description: AI-powered debugging assistant for engineering teams
+  background_color: "#4A90E2"
+features:
+  app_home:
+    home_tab_enabled: true
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: operate
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - chat:write
+      - users:read
+      - users:read.email
+      - im:history
+      - mpim:history
+      - groups:history
+settings:
+  event_subscriptions:
+    request_url: https://examples-with-fresh.pateldp2024.deno.net/api/slack/events
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: true
+    request_url: https://examples-with-fresh.pateldp2024.deno.net/api/slack/interactive
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
