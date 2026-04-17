@@ -25,8 +25,15 @@ OPERATE_BASE_URL=https://recharger-spotlight-virus.ngrok-free.dev
 1. Deploy to Deno Deploy using the provided Deno button or manually
 2. Update the request URLs in your Slack app settings to point to your deployed endpoint
 3. The endpoints will be:
-   - Events: `https://your-domain.deno.dev/api/slack/events`
-   - Interactive: `https://your-domain.deno.dev/api/slack/interactive`
+   - Events: `https://examples-with-fresh.pateldp2024.deno.net/api/slack/events`
+   - Interactive: `https://examples-with-fresh.pateldp2024.deno.net/api/slack/interactive`
+
+## Environment Setup for Deno Deploy
+
+Set these environment variables in your Deno Deploy dashboard:
+- `SLACK_BOT_TOKEN`: Get from your Slack app's OAuth & Permissions page  
+- `OPERATE_API_KEY`: Your Operate API key (format: `op_live_...`)
+- `OPERATE_BASE_URL`: `https://recharger-spotlight-virus.ngrok-free.dev`
 
 ## Flow
 
