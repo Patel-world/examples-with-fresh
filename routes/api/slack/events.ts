@@ -160,7 +160,16 @@ async function handleAppMention(event: SlackEvent["event"]) {
     
     console.log("🔧 [handleAppMention] Step 7: Triggering investigation in Operate...");
     // Step 7: Trigger investigation in Operate
-    const investigationUrl = `${operateBaseUrl}/api/agent-interactions`;
+    // Try different possible endpoints
+    const possibleEndpoints = [
+      '/api/agent-interactions',
+      '/api/interactions', 
+      '/api/chat',
+      '/api/query',
+      '/api/ask'
+    ];
+    
+    const investigationUrl = `${operateBaseUrl}${possibleEndpoints[0]}`;
     const investigationPayload = {
       query: question,
     };
@@ -197,8 +206,51 @@ async function handleAppMention(event: SlackEvent["event"]) {
       console.error("❌ [handleAppMention] Operate API error:", {
         status: investigationResponse.status,
         statusText: investigationResponse.statusText,
-        errorBody: errorText
+        errorBody: errorText,
+        url: investigationUrl
       });
+      
+      // If 404/405, the endpoint might not exist - try alternative endpoints
+      if (investigationResponse.status === 404 || investigationResponse.status === 405) {
+        console.log("🔄 [handleAppMention] Trying alternative endpoints...");
+        for (let i = 1; i < possibleEndpoints.length; i++) {
+          const altUrl = `${operateBaseUrl}${possibleEndpoints[i]}`;
+          console.log(`📤 [handleAppMention] Trying endpoint: ${altUrl}`);
+          
+          try {
+            const altResponse = await fetch(altUrl, {
+              method: "POST",
+              headers: {
+                "X-Operate-API-Key": operateApiKey,
+                "X-Operate-User-Id": operateUserId,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(investigationPayload),
+            });
+            
+            if (altResponse.ok) {
+              console.log(`✅ [handleAppMention] Alternative endpoint worked: ${altUrl}`);
+              const result = await altResponse.json();
+              console.log("📊 [handleAppMention] Investigation result:", result);
+              
+              // Post result back to Slack
+              const responseText = `🔍 Investigation complete!\n\n${result.response || result.answer || result.message || "I've analyzed your system but couldn't find specific details about this issue. Please check the Operate dashboard for more information."}`;
+              
+              await slack.chat.postMessage({
+                channel: event.channel,
+                text: responseText,
+                thread_ts: event.ts,
+              });
+              
+              console.log("✅ [handleAppMention] Successfully completed app mention processing with alternative endpoint");
+              return; // Exit successfully
+            }
+          } catch (altError) {
+            console.log(`❌ [handleAppMention] Alternative endpoint ${altUrl} failed:`, altError.message);
+          }
+        }
+      }
+      
       throw new Error(`Operate API error: ${investigationResponse.status} - ${errorText}`);
     }
     

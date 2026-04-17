@@ -32,7 +32,7 @@ export const handler = define.handlers({
     try {
       console.log("🔍 [TestOperate] Testing connection to Operate API...");
       // Test the connection to Operate API
-      const testUrl = `${operateBaseUrl}/api/health`;
+      const testUrl = `${operateBaseUrl}/api/users`;
       console.log("📤 [TestOperate] Sending request:", {
         url: testUrl,
         headers: {
