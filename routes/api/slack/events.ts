@@ -150,9 +150,25 @@ async function handleAppMention(event: SlackEvent["event"]) {
           statusText: createUserResponse.statusText
         });
         
-        const newUserData = await createUserResponse.json();
-        console.log("👤 [handleAppMention] New user data:", newUserData);
-        operateUserId = newUserData.id;
+        if (createUserResponse.ok) {
+          const newUserData = await createUserResponse.json();
+          console.log("👤 [handleAppMention] New user data:", newUserData);
+          operateUserId = newUserData.id;
+        } else {
+          const errorText = await createUserResponse.text();
+          console.error("❌ [handleAppMention] User creation failed:", {
+            status: createUserResponse.status,
+            error: errorText
+          });
+          
+          // If user creation fails, we can't proceed without a user ID
+          await slack.chat.postMessage({
+            channel: event.channel,
+            text: "Sorry, I couldn't set up your account in Operate. Please contact your admin to create an account for you, then try again.",
+            thread_ts: event.ts,
+          });
+          return;
+        }
       }
       
       console.log("💾 [handleAppMention] Caching user mapping:", {
