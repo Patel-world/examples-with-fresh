@@ -2,17 +2,18 @@ import { define } from "../../utils.ts";
 
 export const handler = define.handlers({
   async GET(ctx) {
-    console.log("🔍 [DebugPermissions] Testing API key permissions...");
-    
-    const operateApiKey = Deno.env.get("OPERATE_API_KEY");
-    const operateBaseUrl = Deno.env.get("OPERATE_BASE_URL") || "https://recharger-spotlight-virus.ngrok-free.dev/operate";
-    
-    if (!operateApiKey) {
-      return new Response(
-        JSON.stringify({ error: "OPERATE_API_KEY not set" }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
-    }
+    try {
+      console.log("🔍 [DebugPermissions] Testing API key permissions...");
+      
+      const operateApiKey = Deno.env.get("OPERATE_API_KEY");
+      const operateBaseUrl = Deno.env.get("OPERATE_BASE_URL") || "https://recharger-spotlight-virus.ngrok-free.dev/operate";
+      
+      if (!operateApiKey) {
+        return new Response(
+          JSON.stringify({ error: "OPERATE_API_KEY not set" }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
 
     const testEndpoints = [
       { name: "User Search (working)", method: "GET", url: `${operateBaseUrl}/api/users/search?email=test@example.com` },
@@ -65,23 +66,39 @@ export const handler = define.handlers({
       }
     }
 
-    return new Response(
-      JSON.stringify({ 
-        timestamp: new Date().toISOString(),
-        apiKey: operateApiKey.substring(0, 20) + "...",
-        results,
-        summary: {
-          total: testEndpoints.length,
-          successful: results.filter(r => r.success).length,
-          unauthorized: results.filter(r => r.status === 401).length,
-          forbidden: results.filter(r => r.status === 403).length,
-          not_found: results.filter(r => r.status === 404).length
+      return new Response(
+        JSON.stringify({ 
+          timestamp: new Date().toISOString(),
+          apiKey: operateApiKey.substring(0, 20) + "...",
+          baseUrl: operateBaseUrl,
+          results,
+          summary: {
+            total: testEndpoints.length,
+            successful: results.filter(r => r.success).length,
+            unauthorized: results.filter(r => r.status === 401).length,
+            forbidden: results.filter(r => r.status === 403).length,
+            not_found: results.filter(r => r.status === 404).length
+          }
+        }, null, 2),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
         }
-      }, null, 2),
-      {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }
-    );
+      );
+      
+    } catch (error) {
+      console.error("Error in debug-permissions:", error);
+      return new Response(
+        JSON.stringify({ 
+          error: "Debug endpoint failed",
+          message: error.message,
+          stack: error.stack 
+        }),
+        { 
+          status: 500, 
+          headers: { "Content-Type": "application/json" } 
+        }
+      );
+    }
   },
 });
