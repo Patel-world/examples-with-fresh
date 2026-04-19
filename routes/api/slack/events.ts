@@ -132,6 +132,7 @@ async function handleAppMention(event: SlackEvent["event"]) {
         const createUserPayload = {
           email,
           first_name: firstName,
+          role: "member",
         };
         console.log("📤 [handleAppMention] Creating user with payload:", createUserPayload);
         
@@ -199,19 +200,11 @@ async function handleAppMention(event: SlackEvent["event"]) {
     }
     
     console.log("🔧 [handleAppMention] Step 7: Triggering investigation in Operate...");
-    // Step 7: Trigger investigation in Operate
-    // Try different possible endpoints
-    const possibleEndpoints = [
-      '/api/agent-interactions',
-      '/api/interactions', 
-      '/api/chat',
-      '/api/query',
-      '/api/ask'
-    ];
-    
-    const investigationUrl = `${operateBaseUrl}${possibleEndpoints[0]}`;
+    // Step 7: Trigger investigation in Operate using streaming endpoint
+    const investigationUrl = `${operateBaseUrl}/api/agent/chat/stream`;
     const investigationPayload = {
-      query: question,
+      message: question,
+      history: [],
     };
     
     console.log("📤 [handleAppMention] Sending investigation request:", {
@@ -250,61 +243,71 @@ async function handleAppMention(event: SlackEvent["event"]) {
         url: investigationUrl
       });
       
-      // If 404/405, the endpoint might not exist - try alternative endpoints
-      if (investigationResponse.status === 404 || investigationResponse.status === 405) {
-        console.log("🔄 [handleAppMention] Trying alternative endpoints...");
-        for (let i = 1; i < possibleEndpoints.length; i++) {
-          const altUrl = `${operateBaseUrl}${possibleEndpoints[i]}`;
-          console.log(`📤 [handleAppMention] Trying endpoint: ${altUrl}`);
-          
-          try {
-            const altResponse = await fetch(altUrl, {
-              method: "POST",
-              headers: {
-                "X-Operate-API-Key": operateApiKey,
-                "X-Operate-User-Id": operateUserId,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(investigationPayload),
-            });
-            
-            if (altResponse.ok) {
-              console.log(`✅ [handleAppMention] Alternative endpoint worked: ${altUrl}`);
-              const result = await altResponse.json();
-              console.log("📊 [handleAppMention] Investigation result:", result);
+      throw new Error(`Operate API error: ${investigationResponse.status} - ${errorText}`);
+    }
+
+    // Handle SSE (Server-Sent Events) stream
+    console.log("📡 [handleAppMention] Processing SSE stream...");
+    const reader = investigationResponse.body?.getReader();
+    const decoder = new TextDecoder();
+    let responseMessage = "";
+    let eventCount = 0;
+    
+    if (!reader) {
+      throw new Error("No response body reader available");
+    }
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const eventData = JSON.parse(line.slice(6));
+              eventCount++;
+              console.log(`📨 [handleAppMention] SSE event ${eventCount}:`, eventData);
               
-              // Post result back to Slack
-              const responseText = `🔍 Investigation complete!\n\n${result.response || result.answer || result.message || "I've analyzed your system but couldn't find specific details about this issue. Please check the Operate dashboard for more information."}`;
-              
-              await slack.chat.postMessage({
-                channel: event.channel,
-                text: responseText,
-                thread_ts: event.ts,
-              });
-              
-              console.log("✅ [handleAppMention] Successfully completed app mention processing with alternative endpoint");
-              return; // Exit successfully
+              // Collect message content from stream events
+              if (eventData.event_type === 'message_chunk' && eventData.data?.content) {
+                responseMessage += eventData.data.content;
+              } else if (eventData.event_type === 'completion' && eventData.data?.response_message) {
+                responseMessage = eventData.data.response_message;
+                break;
+              } else if (eventData.event_type === 'error') {
+                console.error("❌ [handleAppMention] Stream error:", eventData.data);
+                throw new Error(`Stream error: ${eventData.data.message}`);
+              }
+            } catch (parseError) {
+              console.log("⚠️ [handleAppMention] Failed to parse SSE event:", line);
             }
-          } catch (altError) {
-            console.log(`❌ [handleAppMention] Alternative endpoint ${altUrl} failed:`, altError.message);
           }
         }
       }
-      
-      throw new Error(`Operate API error: ${investigationResponse.status} - ${errorText}`);
+    } finally {
+      reader.releaseLock();
     }
     
-    const result = await investigationResponse.json();
-    console.log("📊 [handleAppMention] Investigation result:", result);
+    console.log("📊 [handleAppMention] Final response message:", {
+      length: responseMessage.length,
+      preview: responseMessage.substring(0, 200) + "...",
+      eventCount
+    });
     
     console.log("💬 [handleAppMention] Step 8: Posting result back to Slack...");
     // Step 8: Post result back to Slack
-    const responseText = `🔍 Investigation complete!\n\n${result.response || result.answer || "I've analyzed your system but couldn't find specific details about this issue. Please check the Operate dashboard for more information."}`;
+    const finalMessage = responseMessage.trim() || "I've analyzed your system but couldn't find specific details about this issue. Please check the Operate dashboard for more information.";
+    const responseText = `🔍 Investigation complete!\n\n${finalMessage}`;
     
     console.log("📤 [handleAppMention] Slack message payload:", {
       channel: event.channel,
       thread_ts: event.ts,
-      textPreview: responseText.substring(0, 100) + "..."
+      textPreview: responseText.substring(0, 100) + "...",
+      messageLength: responseMessage.length
     });
     
     await slack.chat.postMessage({
