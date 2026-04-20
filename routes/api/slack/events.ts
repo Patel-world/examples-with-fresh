@@ -578,8 +578,6 @@ async function handleAppMention(event: SlackEvent["event"]) {
       },
       onComplete: () => {
         console.log("✅ [handleAppMention] Stream completed successfully");
-        // Trigger final update to show completion status
-        updateSlackMessageFinal();
       },
       onError: (error: string) => {
         console.error("❌ [handleAppMention] Stream error:", error);
@@ -614,30 +612,21 @@ async function handleAppMention(event: SlackEvent["event"]) {
       }
     };
 
-    const updateSlackMessageFinal = async () => {
-      try {
-        const toolSection = toolTrace.length > 0 ? toolTrace.join('\n\n') + '\n\n---\n\n' : '';
-        const messageSection = streamingContent || "No specific details found. Please check the Operate dashboard.";
-        const finalText = `✅ **Investigation complete!**\n\n${toolSection}${messageSection}`;
-        
-        const chunks = splitMessageForSlack(finalText);
-        await slack.chat.update({
-          channel: event.channel,
-          ts: messageTs,
-          text: chunks[0],
-          mrkdwn: true,
-        });
-      } catch (updateError) {
-        console.error("❌ [updateSlackMessageFinal] Failed to update:", updateError);
-      }
-    };
-
     // Try streaming with real-time updates
     try {
       await tryStreamingEndpointWithCallbacks(operateBaseUrl, operateApiKey, operateUserId, question, streamCallbacks);
       
-      // Stream completed - final message already updated via onMessage callback
-      console.log("✅ [handleAppMention] Investigation completed successfully");
+      // Final update with completion status
+      const toolSection = toolTrace.length > 0 ? toolTrace.join('\n\n') + '\n\n---\n\n' : '';
+      const finalText = `✅ **Investigation complete!**\n\n${toolSection}${streamingContent || "No specific details found. Please check the Operate dashboard."}`;
+      
+      const chunks = splitMessageForSlack(finalText);
+      await slack.chat.update({
+        channel: event.channel,
+        ts: messageTs,
+        text: chunks[0],
+        mrkdwn: true,
+      });
       
     } catch (streamError) {
       console.error("❌ [handleAppMention] Streaming failed:", {
