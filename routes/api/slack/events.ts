@@ -200,6 +200,127 @@ async function tryFallbackEndpoints(operateBaseUrl: string, operateApiKey: strin
   throw new Error("All API endpoints failed");
 }
 
+async function tryStreamingEndpointWithCallbacks(
+  operateBaseUrl: string, 
+  operateApiKey: string, 
+  operateUserId: string, 
+  question: string,
+  callbacks: {
+    onToolCall: (tool: string, command: string) => void;
+    onToolResult: (exitCode: number, isError: boolean, output: string) => void;
+    onMessage: (content: string) => void;
+    onComplete: () => void;
+    onError: (error: string) => void;
+  }
+): Promise<void> {
+  const investigationUrl = `${operateBaseUrl}/api/agent/chat/stream`;
+  const investigationPayload = { message: question, history: [] };
+  
+  console.log("📤 [tryStreamingEndpointWithCallbacks] Starting stream:", { url: investigationUrl });
+  
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    console.log("⏰ [tryStreamingEndpointWithCallbacks] Stream timeout after 60 seconds");
+    controller.abort();
+  }, 60000); // 60 second timeout for long AI processing
+  
+  try {
+    const response = await fetch(investigationUrl, {
+      method: "POST",
+      headers: {
+        "X-Operate-API-Key": operateApiKey,
+        "X-Operate-User-Id": operateUserId,
+        "Content-Type": "application/json",
+        "Accept-Encoding": "identity",
+        "Cache-Control": "no-cache"
+      },
+      body: JSON.stringify(investigationPayload),
+      signal: controller.signal,
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Streaming API error: ${response.status} - ${errorText}`);
+    }
+    
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body reader available");
+    
+    const decoder = new TextDecoder();
+    let buffer = '';
+    
+    // Recursive processing function like Operate frontend
+    const processChunk = async (): Promise<void> => {
+      try {
+        const { done, value } = await reader.read();
+        if (done) {
+          callbacks.onComplete();
+          return;
+        }
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        
+        // Process each line immediately like Operate frontend
+        for (const line of lines) {
+          if (!line.trim() || line.startsWith(': ')) continue;
+          
+          const parsed = parseSSEEvent(line);
+          if (parsed) {
+            console.log(`📨 [tryStreamingEndpointWithCallbacks] Event:`, parsed.event_type);
+            
+            try {
+              switch (parsed.event_type) {
+                case 'tool_call':
+                  callbacks.onToolCall(parsed.data.tool || 'unknown', parsed.data.command || '');
+                  break;
+                case 'tool_result':
+                  callbacks.onToolResult(
+                    parsed.data.exit_code || 0,
+                    parsed.data.is_error || false,
+                    parsed.data.output || ''
+                  );
+                  break;
+                case 'message':
+                  callbacks.onMessage(parsed.data.content || '');
+                  break;
+                case 'complete':
+                  callbacks.onComplete();
+                  return; // End stream processing
+                case 'error':
+                  callbacks.onError(`${parsed.data.code} - ${parsed.data.message}`);
+                  return;
+              }
+            } catch (eventError) {
+              console.error("❌ [tryStreamingEndpointWithCallbacks] Event error:", eventError);
+            }
+          }
+        }
+        
+        // Continue processing recursively
+        await processChunk();
+      } catch (readError) {
+        // Stream closed or aborted
+        callbacks.onComplete();
+      }
+    };
+    
+    await processChunk();
+    
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      callbacks.onError('Request timeout');
+    } else {
+      callbacks.onError(error.message || 'Network error');
+    }
+    throw error;
+  }
+}
+
 function splitMessageForSlack(content: string, maxLength = 2900): string[] {
   if (content.length <= maxLength) {
     return [content];
@@ -449,67 +570,109 @@ async function handleAppMention(event: SlackEvent["event"]) {
       return;
     }
     
-    console.log("🔧 [handleAppMention] Step 7: Triggering investigation in Operate...");
+    console.log("🔧 [handleAppMention] Step 7: Starting streaming investigation...");
     
-    let responseMessage = "";
-    
-    // Try streaming endpoint first, fallback to regular chat if it fails
-    try {
-      responseMessage = await tryStreamingEndpoint(operateBaseUrl, operateApiKey, operateUserId, question);
-    } catch (streamError) {
-      console.log("⚠️ [handleAppMention] Streaming failed, trying fallback endpoints...", streamError.message);
-      responseMessage = await tryFallbackEndpoints(operateBaseUrl, operateApiKey, operateUserId, question);
-    }
-    
-    console.log("📊 [handleAppMention] Final response message:", {
-      length: responseMessage.length,
-      preview: responseMessage.substring(0, 200) + "..."
-    });
-    
-    console.log("💬 [handleAppMention] Step 8: Posting result back to Slack...");
-    // Step 8: Post result back to Slack with chunking for long responses
-    const finalMessage = responseMessage.trim() || "I've analyzed your system but couldn't find specific details about this issue. Please check the Operate dashboard for more information.";
-    const responseText = `🔍 Investigation complete!\n\n${finalMessage}`;
-    
-    // Split message if it exceeds Slack's limits
-    const messageChunks = splitMessageForSlack(responseText);
-    
-    console.log("📤 [handleAppMention] Sending response in chunks:", {
+    // Post initial loading message
+    const loadingResponse = await slack.chat.postMessage({
       channel: event.channel,
+      text: "🔍 Investigating your question...",
       thread_ts: event.ts,
-      totalChunks: messageChunks.length,
-      originalLength: responseText.length
+      mrkdwn: true,
     });
     
-    // Send each chunk as a separate message in the thread
-    for (let i = 0; i < messageChunks.length; i++) {
-      const chunk = messageChunks[i];
-      const isFirstChunk = i === 0;
-      const isLastChunk = i === messageChunks.length - 1;
-      
-      let messageText = chunk;
-      
-      // Add chunk indicators for multi-part messages
-      if (messageChunks.length > 1) {
-        if (isFirstChunk) {
-          messageText = `${chunk}\n\n_[Part ${i + 1} of ${messageChunks.length}]_`;
-        } else if (isLastChunk) {
-          messageText = `_[Part ${i + 1} of ${messageChunks.length}]_\n\n${chunk}`;
-        } else {
-          messageText = `_[Part ${i + 1} of ${messageChunks.length}]_\n\n${chunk}`;
-        }
+    const messageTs = loadingResponse.ts;
+    if (!messageTs) {
+      throw new Error("Failed to get message timestamp for updates");
+    }
+
+    // Stream content and update message in real-time
+    let streamingContent = "";
+    let toolTrace: string[] = [];
+    
+    const streamCallbacks = {
+      onToolCall: (tool: string, command: string) => {
+        toolTrace.push(`🔧 **${tool}**: \`${command}\``);
+        updateSlackMessage();
+      },
+      onToolResult: (exitCode: number, isError: boolean, output: string) => {
+        const emoji = isError ? '❌' : '✅';
+        toolTrace[toolTrace.length - 1] += `\n${emoji} **Result** (exit ${exitCode}):\n\`\`\`\n${output.substring(0, 500)}${output.length > 500 ? '...' : ''}\n\`\`\``;
+        updateSlackMessage();
+      },
+      onMessage: (content: string) => {
+        streamingContent = content;
+        updateSlackMessage();
+      },
+      onComplete: () => {
+        console.log("✅ [handleAppMention] Stream completed successfully");
+      },
+      onError: (error: string) => {
+        console.error("❌ [handleAppMention] Stream error:", error);
       }
+    };
+
+    const updateSlackMessage = async () => {
+      try {
+        const toolSection = toolTrace.length > 0 ? toolTrace.join('\n\n') + '\n\n---\n\n' : '';
+        const messageSection = streamingContent || "🔍 Processing...";
+        const fullText = `🔍 **Investigation in progress...**\n\n${toolSection}${messageSection}`;
+        
+        const chunks = splitMessageForSlack(fullText);
+        await slack.chat.update({
+          channel: event.channel,
+          ts: messageTs,
+          text: chunks[0], // Use first chunk for update
+          mrkdwn: true,
+        });
+        
+        // If there are additional chunks, post them as follow-ups
+        for (let i = 1; i < chunks.length; i++) {
+          await slack.chat.postMessage({
+            channel: event.channel,
+            text: `_[Continued ${i + 1}/${chunks.length}]_\n\n${chunks[i]}`,
+            thread_ts: event.ts,
+            mrkdwn: true,
+          });
+        }
+      } catch (updateError) {
+        console.error("❌ [updateSlackMessage] Failed to update:", updateError);
+      }
+    };
+
+    // Try streaming with real-time updates
+    try {
+      await tryStreamingEndpointWithCallbacks(operateBaseUrl, operateApiKey, operateUserId, question, streamCallbacks);
       
-      await slack.chat.postMessage({
+      // Final update with completion status
+      const toolSection = toolTrace.length > 0 ? toolTrace.join('\n\n') + '\n\n---\n\n' : '';
+      const finalText = `✅ **Investigation complete!**\n\n${toolSection}${streamingContent || "No specific details found. Please check the Operate dashboard."}`;
+      
+      const chunks = splitMessageForSlack(finalText);
+      await slack.chat.update({
         channel: event.channel,
-        text: messageText,
-        thread_ts: event.ts,
-        mrkdwn: true, // Enable Slack markdown formatting
+        ts: messageTs,
+        text: chunks[0],
+        mrkdwn: true,
       });
       
-      // Small delay between chunks to avoid rate limits
-      if (!isLastChunk) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (streamError) {
+      console.log("⚠️ [handleAppMention] Streaming failed, trying fallback...", streamError.message);
+      
+      try {
+        const fallbackResponse = await tryFallbackEndpoints(operateBaseUrl, operateApiKey, operateUserId, question);
+        await slack.chat.update({
+          channel: event.channel,
+          ts: messageTs,
+          text: `✅ **Investigation complete!**\n\n${fallbackResponse}`,
+          mrkdwn: true,
+        });
+      } catch (fallbackError) {
+        await slack.chat.update({
+          channel: event.channel,
+          ts: messageTs,
+          text: "❌ Investigation failed. Please try again or check the Operate dashboard.",
+          mrkdwn: true,
+        });
       }
     }
     
