@@ -348,6 +348,9 @@ function splitMessageForSlack(content: string, maxLength = 2900): string[] {
 // In-memory cache for user mappings (in production, use Redis/KV)
 const userCache = new Map<string, string>(); // slack_user_id -> operate_user_id
 
+// Track ongoing requests to prevent duplicates
+const ongoingRequests = new Set<string>();
+
 interface SlackEvent {
   type: string;
   event: {
@@ -361,7 +364,21 @@ interface SlackEvent {
 }
 
 async function handleAppMention(event: SlackEvent["event"]) {
-  console.log("🚀 [handleAppMention] Starting processing app mention:", JSON.stringify(event, null, 2));
+  const requestKey = `${event.channel}-${event.ts}`;
+  
+  // Prevent duplicate processing of the same mention
+  if (ongoingRequests.has(requestKey)) {
+    console.log("🔄 [handleAppMention] Request already in progress, skipping duplicate");
+    return;
+  }
+  
+  ongoingRequests.add(requestKey);
+  
+  try {
+    console.log("🚀 [handleAppMention] Starting processing app mention:", {
+      requestKey,
+      event: JSON.stringify(event, null, 2)
+    });
   
   const slackToken = Deno.env.get("SLACK_BOT_TOKEN");
   const operateApiKey = Deno.env.get("OPERATE_API_KEY");
@@ -503,13 +520,16 @@ async function handleAppMention(event: SlackEvent["event"]) {
           const errorText = await createUserResponse.text();
           console.error("❌ [handleAppMention] User creation failed:", {
             status: createUserResponse.status,
-            error: errorText
+            statusText: createUserResponse.statusText,
+            error: errorText,
+            url: `${operateBaseUrl}/api/users`,
+            payload: createUserPayload
           });
           
           // If user creation fails, we can't proceed without a user ID
           await slack.chat.postMessage({
             channel: event.channel,
-            text: "Sorry, I couldn't set up your account in Operate. Please contact your admin to create an account for you, then try again.",
+            text: `Sorry, I couldn't set up your account in Operate. Error: ${createUserResponse.status} - ${errorText.substring(0, 100)}. Please contact your admin to create an account for you, then try again.`,
             thread_ts: event.ts,
           });
           return;
@@ -679,6 +699,10 @@ async function handleAppMention(event: SlackEvent["event"]) {
         stack: postError.stack
       });
     }
+  } finally {
+    // Always cleanup the ongoing request tracker
+    ongoingRequests.delete(requestKey);
+    console.log("🧹 [handleAppMention] Cleaned up request tracker");
   }
 }
 
