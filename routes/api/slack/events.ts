@@ -154,50 +154,10 @@ async function tryStreamingEndpoint(operateBaseUrl: string, operateApiKey: strin
   return finalContent.trim();
 }
 
+// Note: No fallback endpoints exist in Operate backend - only streaming is supported
 async function tryFallbackEndpoints(operateBaseUrl: string, operateApiKey: string, operateUserId: string, question: string): Promise<string> {
-  const endpoints = [
-    `${operateBaseUrl}/api/agent/chat`,
-    `${operateBaseUrl}/api/agent-interactions`,
-    `${operateBaseUrl}/api/chat`
-  ];
-  
-  for (const endpoint of endpoints) {
-    try {
-      console.log(`📤 [tryFallbackEndpoints] Trying: ${endpoint}`);
-      
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "X-Operate-API-Key": operateApiKey,
-          "X-Operate-User-Id": operateUserId,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: question,
-          query: question, // Some APIs might expect 'query' instead
-          history: []
-        }),
-      });
-      
-      if (response.ok) {
-        const data = await response.text();
-        console.log(`✅ [tryFallbackEndpoints] Success with: ${endpoint}`);
-        
-        try {
-          const json = JSON.parse(data);
-          return json.response || json.message || json.answer || JSON.stringify(json);
-        } catch {
-          return data; // Return raw text if not JSON
-        }
-      }
-      
-      console.log(`❌ [tryFallbackEndpoints] Failed ${endpoint}: ${response.status}`);
-    } catch (error) {
-      console.log(`❌ [tryFallbackEndpoints] Error with ${endpoint}:`, error.message);
-    }
-  }
-  
-  throw new Error("All API endpoints failed");
+  console.log("⚠️ [tryFallbackEndpoints] No fallback endpoints available - Operate only supports streaming");
+  throw new Error("Only streaming endpoint is available - no fallback options");
 }
 
 async function tryStreamingEndpointWithCallbacks(
@@ -250,13 +210,19 @@ async function tryStreamingEndpointWithCallbacks(
     
     const decoder = new TextDecoder();
     let buffer = '';
+    let eventCount = 0;
     
     // Recursive processing function like Operate frontend
     const processChunk = async (): Promise<void> => {
       try {
         const { done, value } = await reader.read();
         if (done) {
-          callbacks.onComplete();
+          console.log(`📡 [tryStreamingEndpointWithCallbacks] Stream ended - received ${eventCount} events`);
+          if (eventCount === 0) {
+            callbacks.onError('No events received from backend - possible authentication or processing error');
+          } else {
+            callbacks.onComplete();
+          }
           return;
         }
         
@@ -270,7 +236,8 @@ async function tryStreamingEndpointWithCallbacks(
           
           const parsed = parseSSEEvent(line);
           if (parsed) {
-            console.log(`📨 [tryStreamingEndpointWithCallbacks] Event:`, parsed.event_type);
+            eventCount++;
+            console.log(`📨 [tryStreamingEndpointWithCallbacks] Event ${eventCount}:`, parsed.event_type);
             
             try {
               switch (parsed.event_type) {
@@ -303,8 +270,14 @@ async function tryStreamingEndpointWithCallbacks(
         // Continue processing recursively
         await processChunk();
       } catch (readError) {
-        // Stream closed or aborted
-        callbacks.onComplete();
+        console.log("📡 [tryStreamingEndpointWithCallbacks] Stream read error:", readError.message);
+        // Check if this is unexpected EOF
+        if (readError.message.includes('unexpected EOF') || readError.message.includes('EOF')) {
+          callbacks.onError('Backend stream terminated unexpectedly - possible server-side processing error');
+        } else {
+          // Stream closed or aborted normally
+          callbacks.onComplete();
+        }
       }
     };
     
@@ -656,24 +629,20 @@ async function handleAppMention(event: SlackEvent["event"]) {
       });
       
     } catch (streamError) {
-      console.log("⚠️ [handleAppMention] Streaming failed, trying fallback...", streamError.message);
+      console.error("❌ [handleAppMention] Streaming failed:", {
+        error: streamError.message,
+        stack: streamError.stack,
+        operateBaseUrl,
+        hasApiKey: !!operateApiKey,
+        hasUserId: !!operateUserId
+      });
       
-      try {
-        const fallbackResponse = await tryFallbackEndpoints(operateBaseUrl, operateApiKey, operateUserId, question);
-        await slack.chat.update({
-          channel: event.channel,
-          ts: messageTs,
-          text: `✅ **Investigation complete!**\n\n${fallbackResponse}`,
-          mrkdwn: true,
-        });
-      } catch (fallbackError) {
-        await slack.chat.update({
-          channel: event.channel,
-          ts: messageTs,
-          text: "❌ Investigation failed. Please try again or check the Operate dashboard.",
-          mrkdwn: true,
-        });
-      }
+      await slack.chat.update({
+        channel: event.channel,
+        ts: messageTs,
+        text: `❌ **Investigation failed**\n\nStreaming error: ${streamError.message}\n\nPlease try again or check the Operate dashboard.`,
+        mrkdwn: true,
+      });
     }
     
     console.log("✅ [handleAppMention] Successfully completed app mention processing");
