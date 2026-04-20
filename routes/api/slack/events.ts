@@ -1,6 +1,242 @@
 import { define } from "../../../utils.ts";
 import { WebClient } from "@slack/web-api";
 
+interface StreamEvent {
+  event_type: string;
+  data: {
+    content?: string;
+    code?: string;
+    message?: string;
+    response_message?: string;
+  };
+}
+
+function parseSSEEvent(eventString: string): StreamEvent | null {
+  const lines = eventString.split('\n');
+  let data = '';
+
+  for (const line of lines) {
+    if (line.startsWith('data: ')) {
+      data = line.slice(6); // Remove 'data: ' prefix
+      break;
+    }
+  }
+
+  if (!data || data === '[DONE]') return null;
+
+  try {
+    return JSON.parse(data) as StreamEvent;
+  } catch {
+    return null;
+  }
+}
+
+function handleStreamEvent(event: StreamEvent): string {
+  switch (event.event_type) {
+    case 'content_delta':
+    case 'message_chunk':
+      return event.data.content || '';
+
+    case 'content_complete':
+      return '\n\n---\n\n';
+
+    case 'completion':
+      return event.data.response_message || '';
+
+    case 'error':
+      throw new Error(`Operate error: ${event.data.code} - ${event.data.message}`);
+
+    case 'tool_use_start':
+      return `🔧 Using tool...\n`;
+
+    case 'tool_use_complete':
+      return `✅ Tool completed\n`;
+
+    default:
+      console.log(`🤷 [handleStreamEvent] Unknown event type: ${event.event_type}`);
+      return '';
+  }
+}
+
+async function tryStreamingEndpoint(operateBaseUrl: string, operateApiKey: string, operateUserId: string, question: string): Promise<string> {
+  const investigationUrl = `${operateBaseUrl}/api/agent/chat/stream`;
+  const investigationPayload = { message: question, history: [] };
+  
+  console.log("📤 [tryStreamingEndpoint] Attempting streaming request:", { url: investigationUrl });
+  
+  const response = await fetch(investigationUrl, {
+    method: "POST",
+    headers: {
+      "X-Operate-API-Key": operateApiKey,
+      "X-Operate-User-Id": operateUserId,
+      "Content-Type": "application/json",
+      "Accept": "text/event-stream",
+      "Cache-Control": "no-cache"
+    },
+    body: JSON.stringify(investigationPayload),
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Streaming API error: ${response.status} - ${errorText}`);
+  }
+  
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("No response body reader available");
+  
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalContent = '';
+  let eventCount = 0;
+  
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      buffer += decoder.decode(value, { stream: true });
+      
+      // Process complete SSE events (separated by \n\n)
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || ''; // Keep incomplete event in buffer
+      
+      for (const eventString of events) {
+        if (eventString.trim()) {
+          const parsed = parseSSEEvent(eventString);
+          if (parsed) {
+            eventCount++;
+            console.log(`📨 [tryStreamingEndpoint] SSE event ${eventCount}:`, parsed);
+            
+            try {
+              const content = handleStreamEvent(parsed);
+              finalContent += content;
+              
+              // Break on completion events
+              if (parsed.event_type === 'completion') {
+                break;
+              }
+            } catch (eventError) {
+              console.error("❌ [tryStreamingEndpoint] Event handling error:", eventError.message);
+              throw eventError;
+            }
+          }
+        }
+      }
+    }
+    
+    // Process any remaining buffer content
+    if (buffer.trim()) {
+      const parsed = parseSSEEvent(buffer);
+      if (parsed) {
+        finalContent += handleStreamEvent(parsed);
+      }
+    }
+    
+  } finally {
+    reader.releaseLock();
+  }
+  
+  console.log(`📊 [tryStreamingEndpoint] Processed ${eventCount} events, final content length: ${finalContent.length}`);
+  return finalContent.trim();
+}
+
+async function tryFallbackEndpoints(operateBaseUrl: string, operateApiKey: string, operateUserId: string, question: string): Promise<string> {
+  const endpoints = [
+    `${operateBaseUrl}/api/agent/chat`,
+    `${operateBaseUrl}/api/agent-interactions`,
+    `${operateBaseUrl}/api/chat`
+  ];
+  
+  for (const endpoint of endpoints) {
+    try {
+      console.log(`📤 [tryFallbackEndpoints] Trying: ${endpoint}`);
+      
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "X-Operate-API-Key": operateApiKey,
+          "X-Operate-User-Id": operateUserId,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: question,
+          query: question, // Some APIs might expect 'query' instead
+          history: []
+        }),
+      });
+      
+      if (response.ok) {
+        const data = await response.text();
+        console.log(`✅ [tryFallbackEndpoints] Success with: ${endpoint}`);
+        
+        try {
+          const json = JSON.parse(data);
+          return json.response || json.message || json.answer || JSON.stringify(json);
+        } catch {
+          return data; // Return raw text if not JSON
+        }
+      }
+      
+      console.log(`❌ [tryFallbackEndpoints] Failed ${endpoint}: ${response.status}`);
+    } catch (error) {
+      console.log(`❌ [tryFallbackEndpoints] Error with ${endpoint}:`, error.message);
+    }
+  }
+  
+  throw new Error("All API endpoints failed");
+}
+
+function splitMessageForSlack(content: string, maxLength = 2900): string[] {
+  if (content.length <= maxLength) {
+    return [content];
+  }
+
+  const chunks: string[] = [];
+  let currentChunk = '';
+
+  const lines = content.split('\n');
+
+  for (const line of lines) {
+    // If adding this line would exceed the limit
+    if (currentChunk.length + line.length + 1 > maxLength) {
+      if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+        currentChunk = '';
+      }
+      
+      // If a single line is too long, split it by sentences or words
+      if (line.length > maxLength) {
+        const words = line.split(' ');
+        let wordChunk = '';
+        
+        for (const word of words) {
+          if (wordChunk.length + word.length + 1 > maxLength) {
+            if (wordChunk.trim()) {
+              chunks.push(wordChunk.trim());
+              wordChunk = '';
+            }
+          }
+          wordChunk += (wordChunk ? ' ' : '') + word;
+        }
+        
+        if (wordChunk.trim()) {
+          currentChunk = wordChunk;
+        }
+      } else {
+        currentChunk = line;
+      }
+    } else {
+      currentChunk += (currentChunk ? '\n' : '') + line;
+    }
+  }
+
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
+
+  return chunks;
+}
+
 // In-memory cache for user mappings (in production, use Redis/KV)
 const userCache = new Map<string, string>(); // slack_user_id -> operate_user_id
 
@@ -200,121 +436,68 @@ async function handleAppMention(event: SlackEvent["event"]) {
     }
     
     console.log("🔧 [handleAppMention] Step 7: Triggering investigation in Operate...");
-    // Step 7: Trigger investigation in Operate using streaming endpoint
-    const investigationUrl = `${operateBaseUrl}/api/agent/chat/stream`;
-    const investigationPayload = {
-      message: question,
-      history: [],
-    };
     
-    console.log("📤 [handleAppMention] Sending investigation request:", {
-      url: investigationUrl,
-      payload: investigationPayload,
-      headers: {
-        "X-Operate-API-Key": operateApiKey?.substring(0, 12) + "...",
-        "X-Operate-User-Id": operateUserId,
-        "Content-Type": "application/json"
-      }
-    });
-    
-    const investigationResponse = await fetch(investigationUrl, {
-      method: "POST",
-      headers: {
-        "X-Operate-API-Key": operateApiKey,
-        "X-Operate-User-Id": operateUserId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(investigationPayload),
-    });
-    
-    console.log("📥 [handleAppMention] Investigation response:", {
-      status: investigationResponse.status,
-      ok: investigationResponse.ok,
-      statusText: investigationResponse.statusText,
-      headers: Object.fromEntries(investigationResponse.headers.entries())
-    });
-    
-    if (!investigationResponse.ok) {
-      const errorText = await investigationResponse.text();
-      console.error("❌ [handleAppMention] Operate API error:", {
-        status: investigationResponse.status,
-        statusText: investigationResponse.statusText,
-        errorBody: errorText,
-        url: investigationUrl
-      });
-      
-      throw new Error(`Operate API error: ${investigationResponse.status} - ${errorText}`);
-    }
-
-    // Handle SSE (Server-Sent Events) stream
-    console.log("📡 [handleAppMention] Processing SSE stream...");
-    const reader = investigationResponse.body?.getReader();
-    const decoder = new TextDecoder();
     let responseMessage = "";
-    let eventCount = 0;
     
-    if (!reader) {
-      throw new Error("No response body reader available");
-    }
-
+    // Try streaming endpoint first, fallback to regular chat if it fails
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const eventData = JSON.parse(line.slice(6));
-              eventCount++;
-              console.log(`📨 [handleAppMention] SSE event ${eventCount}:`, eventData);
-              
-              // Collect message content from stream events
-              if (eventData.event_type === 'message_chunk' && eventData.data?.content) {
-                responseMessage += eventData.data.content;
-              } else if (eventData.event_type === 'completion' && eventData.data?.response_message) {
-                responseMessage = eventData.data.response_message;
-                break;
-              } else if (eventData.event_type === 'error') {
-                console.error("❌ [handleAppMention] Stream error:", eventData.data);
-                throw new Error(`Stream error: ${eventData.data.message}`);
-              }
-            } catch (parseError) {
-              console.log("⚠️ [handleAppMention] Failed to parse SSE event:", line);
-            }
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
+      responseMessage = await tryStreamingEndpoint(operateBaseUrl, operateApiKey, operateUserId, question);
+    } catch (streamError) {
+      console.log("⚠️ [handleAppMention] Streaming failed, trying fallback endpoints...", streamError.message);
+      responseMessage = await tryFallbackEndpoints(operateBaseUrl, operateApiKey, operateUserId, question);
     }
     
     console.log("📊 [handleAppMention] Final response message:", {
       length: responseMessage.length,
-      preview: responseMessage.substring(0, 200) + "...",
-      eventCount
+      preview: responseMessage.substring(0, 200) + "..."
     });
     
     console.log("💬 [handleAppMention] Step 8: Posting result back to Slack...");
-    // Step 8: Post result back to Slack
+    // Step 8: Post result back to Slack with chunking for long responses
     const finalMessage = responseMessage.trim() || "I've analyzed your system but couldn't find specific details about this issue. Please check the Operate dashboard for more information.";
     const responseText = `🔍 Investigation complete!\n\n${finalMessage}`;
     
-    console.log("📤 [handleAppMention] Slack message payload:", {
+    // Split message if it exceeds Slack's limits
+    const messageChunks = splitMessageForSlack(responseText);
+    
+    console.log("📤 [handleAppMention] Sending response in chunks:", {
       channel: event.channel,
       thread_ts: event.ts,
-      textPreview: responseText.substring(0, 100) + "...",
-      messageLength: responseMessage.length
+      totalChunks: messageChunks.length,
+      originalLength: responseText.length
     });
     
-    await slack.chat.postMessage({
-      channel: event.channel,
-      text: responseText,
-      thread_ts: event.ts,
-    });
+    // Send each chunk as a separate message in the thread
+    for (let i = 0; i < messageChunks.length; i++) {
+      const chunk = messageChunks[i];
+      const isFirstChunk = i === 0;
+      const isLastChunk = i === messageChunks.length - 1;
+      
+      let messageText = chunk;
+      
+      // Add chunk indicators for multi-part messages
+      if (messageChunks.length > 1) {
+        if (isFirstChunk) {
+          messageText = `${chunk}\n\n_[Part ${i + 1} of ${messageChunks.length}]_`;
+        } else if (isLastChunk) {
+          messageText = `_[Part ${i + 1} of ${messageChunks.length}]_\n\n${chunk}`;
+        } else {
+          messageText = `_[Part ${i + 1} of ${messageChunks.length}]_\n\n${chunk}`;
+        }
+      }
+      
+      await slack.chat.postMessage({
+        channel: event.channel,
+        text: messageText,
+        thread_ts: event.ts,
+        mrkdwn: true, // Enable Slack markdown formatting
+      });
+      
+      // Small delay between chunks to avoid rate limits
+      if (!isLastChunk) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
     
     console.log("✅ [handleAppMention] Successfully completed app mention processing");
     
