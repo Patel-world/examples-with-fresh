@@ -121,8 +121,8 @@ async function handleAppMention(event: SlackEvent["event"]) {
         }
       }
       
-      if (userData.users && userData.users.length > 0) {
-        operateUserId = userData.users[0].id;
+      if (userData.items && userData.items.length > 0) {
+        operateUserId = userData.items[0].id;
         console.log("✅ [handleAppMention] User found in Operate:", operateUserId);
       } else {
         console.log("➕ [handleAppMention] User not found, creating new user...");
