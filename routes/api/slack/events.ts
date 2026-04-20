@@ -11,17 +11,10 @@ interface StreamEvent {
   };
 }
 
-function parseSSEEvent(eventString: string): StreamEvent | null {
-  const lines = eventString.split('\n');
-  let data = '';
-
-  for (const line of lines) {
-    if (line.startsWith('data: ')) {
-      data = line.slice(6); // Remove 'data: ' prefix
-      break;
-    }
-  }
-
+function parseSSEEvent(line: string): StreamEvent | null {
+  if (!line.startsWith('data: ')) return null;
+  
+  const data = line.slice(6).trim(); // Remove 'data: ' prefix
   if (!data || data === '[DONE]') return null;
 
   try {
@@ -33,27 +26,26 @@ function parseSSEEvent(eventString: string): StreamEvent | null {
 
 function handleStreamEvent(event: StreamEvent): string {
   switch (event.event_type) {
-    case 'content_delta':
-    case 'message_chunk':
+    case 'tool_call':
+      return `🔧 **${event.data.tool}**: ${event.data.command}\n`;
+
+    case 'tool_result':
+      const isError = event.data.is_error;
+      const emoji = isError ? '❌' : '✅';
+      return `${emoji} **Result** (exit ${event.data.exit_code}):\n\`\`\`\n${event.data.output || 'No output'}\n\`\`\`\n\n`;
+
+    case 'message':
       return event.data.content || '';
 
-    case 'content_complete':
-      return '\n\n---\n\n';
-
-    case 'completion':
-      return event.data.response_message || '';
+    case 'complete':
+      // Don't add extra content for completion - the final message is already sent
+      return '';
 
     case 'error':
       throw new Error(`Operate error: ${event.data.code} - ${event.data.message}`);
 
-    case 'tool_use_start':
-      return `🔧 Using tool...\n`;
-
-    case 'tool_use_complete':
-      return `✅ Tool completed\n`;
-
     default:
-      console.log(`🤷 [handleStreamEvent] Unknown event type: ${event.event_type}`);
+      console.log(`🤷 [handleStreamEvent] Unknown event type: ${event.event_type}`, event);
       return '';
   }
 }
@@ -64,17 +56,23 @@ async function tryStreamingEndpoint(operateBaseUrl: string, operateApiKey: strin
   
   console.log("📤 [tryStreamingEndpoint] Attempting streaming request:", { url: investigationUrl });
   
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+  
   const response = await fetch(investigationUrl, {
     method: "POST",
     headers: {
       "X-Operate-API-Key": operateApiKey,
       "X-Operate-User-Id": operateUserId,
       "Content-Type": "application/json",
-      "Accept": "text/event-stream",
+      "Accept-Encoding": "identity", // Prevent gzip buffering for Safari
       "Cache-Control": "no-cache"
     },
     body: JSON.stringify(investigationPayload),
+    signal: controller.signal,
   });
+  
+  clearTimeout(timeoutId);
   
   if (!response.ok) {
     const errorText = await response.text();
@@ -96,32 +94,43 @@ async function tryStreamingEndpoint(operateBaseUrl: string, operateApiKey: strin
       
       buffer += decoder.decode(value, { stream: true });
       
-      // Process complete SSE events (separated by \n\n)
-      const events = buffer.split('\n\n');
-      buffer = events.pop() || ''; // Keep incomplete event in buffer
+      // Check for early termination or unexpected EOF
+      if (buffer.includes('unexpected EOF')) {
+        throw new Error("Stream terminated unexpectedly (unexpected EOF)");
+      }
       
-      for (const eventString of events) {
-        if (eventString.trim()) {
-          const parsed = parseSSEEvent(eventString);
-          if (parsed) {
-            eventCount++;
-            console.log(`📨 [tryStreamingEndpoint] SSE event ${eventCount}:`, parsed);
+      // Process complete lines - split by newline like the Operate frontend
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? ''; // Keep incomplete line in buffer
+      
+      for (const line of lines) {
+        // Skip keepalive and empty lines
+        if (!line.trim() || line.startsWith(': ')) continue;
+        
+        const parsed = parseSSEEvent(line);
+        if (parsed) {
+          eventCount++;
+          console.log(`📨 [tryStreamingEndpoint] SSE event ${eventCount}:`, parsed);
+          
+          try {
+            const content = handleStreamEvent(parsed);
+            finalContent += content;
             
-            try {
-              const content = handleStreamEvent(parsed);
-              finalContent += content;
-              
-              // Break on completion events
-              if (parsed.event_type === 'completion') {
-                break;
-              }
-            } catch (eventError) {
-              console.error("❌ [tryStreamingEndpoint] Event handling error:", eventError.message);
-              throw eventError;
+            // Break on completion events
+            if (parsed.event_type === 'complete') {
+              break;
             }
+          } catch (eventError) {
+            console.error("❌ [tryStreamingEndpoint] Event handling error:", eventError.message);
+            throw eventError;
           }
         }
       }
+    }
+    
+    // If we got no events but the stream ended, that's suspicious
+    if (eventCount === 0 && finalContent.length === 0) {
+      throw new Error("Stream ended without any valid SSE events");
     }
     
     // Process any remaining buffer content
@@ -132,8 +141,13 @@ async function tryStreamingEndpoint(operateBaseUrl: string, operateApiKey: strin
       }
     }
     
-  } finally {
+  } catch (error) {
     reader.releaseLock();
+    throw error;
+  } finally {
+    if (reader.locked) {
+      reader.releaseLock();
+    }
   }
   
   console.log(`📊 [tryStreamingEndpoint] Processed ${eventCount} events, final content length: ${finalContent.length}`);
